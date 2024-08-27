@@ -7,13 +7,6 @@ def validate_filename(filename):
         return f"Filename '{filename}' does not match the expected pattern."
     return None
 
-def validate_file_size(filename, max_size_mb=5):
-    """Validate the file size is within the specified limit (in MB)."""
-    file_size = os.path.getsize(filename) / (1024 * 1024)
-    if file_size > max_size_mb:
-        return f"File size {file_size:.2f} MB exceeds the maximum allowed size of {max_size_mb} MB."
-    return None
-
 def validate_encoding(filename, expected_encoding='utf-8'):
     """Validate that the file is encoded in the expected format."""
     try:
