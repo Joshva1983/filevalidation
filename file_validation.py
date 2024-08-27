@@ -33,7 +33,7 @@ def convert_to_utf8(filename, new_filename):
     except (UnicodeDecodeError, IOError) as e:
         raise RuntimeError(f"Failed to convert file encoding: {e}")
 
-def validate_record_length(filename, expected_length, delimiter='|'):
+def validate_record_length(filename, expected_length, delimiter='\t'):
     """Validate that each record has the expected number of fields."""
     with open(filename, 'r') as file:
         for i, line in enumerate(file, start=1):
@@ -42,17 +42,17 @@ def validate_record_length(filename, expected_length, delimiter='|'):
                 return f"Record {i} has an incorrect number of fields. Expected {expected_length}, found {len(fields)}."
     return None
 
-def validate_field_lengths(filename, max_lengths, delimiter='|'):
+def validate_field_lengths(filename, max_lengths, delimiter='\t'):
     """Validate that each field in the records does not exceed its maximum length."""
     with open(filename, 'r') as file:
         for i, line in enumerate(file, start=1):
             fields = line.strip().split(delimiter)
             for j, field in enumerate(fields):
-                if len(field) > max_lengths[j]:
-                    return f"Record {i}, Field {j+1} exceeds the maximum length of {max_lengths[j]} characters."
+                if len(field.encode('utf-8')) > max_lengths[j]:
+                    return f"Record {i}, Field {j+1} exceeds the maximum length of {max_lengths[j]} bytes."
     return None
 
-def validate_datatypes(filename, datatype_checks, delimiter='|'):
+def validate_datatypes(filename, datatype_checks, delimiter='\t'):
     """Validate that each field in the records matches the expected datatype."""
     with open(filename, 'r') as file:
         for i, line in enumerate(file, start=1):
@@ -62,31 +62,31 @@ def validate_datatypes(filename, datatype_checks, delimiter='|'):
                     return f"Record {i}, Field {j+1} does not match the expected datatype."
     return None
 
-def validate_mandatory_fields(filename, mandatory_fields, delimiter='|'):
-    """Validate that mandatory fields are not null or empty."""
+def validate_mandatory_fields(filename, mandatory_fields, delimiter='\t'):
+    """Validate that mandatory fields are not null, empty, or contain only spaces."""
     with open(filename, 'r') as file:
         for i, line in enumerate(file, start=1):
             fields = line.strip().split(delimiter)
             for field_index in mandatory_fields:
                 if not fields[field_index].strip():
-                    return f"Record {i}, Field {field_index+1} is mandatory and cannot be empty."
+                    return f"Record {i}, Field {field_index+1} is mandatory and cannot be empty or contain only spaces."
     return None
 
-def check_for_duplicates(filename, delimiter='|'):
-    """Check for duplicate records based on the 'id' field."""
+def check_for_duplicates(filename, delimiter='\t'):
+    """Check for duplicate records based on the 'member id' field."""
     seen_ids = set()
     duplicates = []
     with open(filename, 'r') as file:
         for i, line in enumerate(file, start=1):
             fields = line.strip().split(delimiter)
-            record_id = fields[0]
+            record_id = fields[0]  # Assuming 'member id' is the first field
             if record_id in seen_ids:
                 duplicates.append(f"Duplicate record found at line {i}: {line.strip()}")
             else:
                 seen_ids.add(record_id)
     return duplicates
 
-def run_all_validations(filename, delimiter='|', expected_encoding='utf-8'):
+def run_all_validations(filename, delimiter='\t', expected_encoding='utf-8'):
     """Run all validations on the file and return a list of errors."""
     errors = []
 
@@ -109,23 +109,32 @@ def run_all_validations(filename, delimiter='|', expected_encoding='utf-8'):
     result = validate_file_size(filename)
     if result: errors.append(result)
 
-    result = validate_record_length(filename, expected_length=3, delimiter=delimiter)
+    result = validate_record_length(filename, expected_length=11, delimiter=delimiter)
     if result: errors.append(result)
 
-    max_lengths = [20, 10, 255]  # Example: max lengths for 'id', 'code', 'text' fields
+    max_lengths = [9, 3, 3, 9, 9, 9, 8, 10, 10, 10, 525]  # Max lengths for each field
     result = validate_field_lengths(filename, max_lengths, delimiter)
     if result: errors.append(result)
 
     datatype_checks = [
-        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # id: alphanumeric
-        lambda x: x.isdigit(),  # code: numeric
-        lambda x: bool(re.match(r'^[a-zA-Z0-9\s\-]+$', x))  # text: alphanumeric with spaces and hyphens
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # member id: alphanumeric
+        lambda x: x.isdigit(),  # member cd: numeric
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # SPI Type cd: alphanumeric
+        lambda x: x.isdigit(),  # LL eff dte: numeric
+        lambda x: x.isdigit(),  # LL end dte: numeric
+        lambda x: x.isdigit(),  # process date: numeric
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # process id: alphanumeric
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # npi id: alphanumeric
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # dignss cd: alphanumeric
+        lambda x: bool(re.match(r'^[a-zA-Z0-9\-]+$', x)),  # tdignss cd: alphanumeric
+        lambda x: bool(re.match(r'^[\w\s\-]+$', x))  # txt line: alphanumeric (with spaces and hyphens)
     ]
     result = validate_datatypes(filename, datatype_checks, delimiter)
     if result: errors.append(result)
 
-    # Check mandatory fields: 'id' (index 0) and 'cd' (index 1)
-    mandatory_fields = [0, 1]
+    # Check mandatory fields: 'member id' (index 0), 'member cd' (index 1), 'SPI Type cd' (index 2),
+    # 'LL eff dte' (index 3), 'LL end dte' (index 4), 'process date' (index 5)
+    mandatory_fields = [0, 1, 2, 3, 4, 5]
     result = validate_mandatory_fields(filename, mandatory_fields, delimiter)
     if result: errors.append(result)
 
@@ -147,7 +156,7 @@ def generate_report(errors, report_file):
 # Example usage
 if __name__ == "__main__":
     filename = "mainframe_dataset.txt"
-    delimiter = '|'  # Specify the delimiter used in your txt file
+    delimiter = '\t'  # Tab-delimited
 
     errors = run_all_validations(filename, delimiter)
 
@@ -157,3 +166,4 @@ if __name__ == "__main__":
         print("File validation failed.")
     
     generate_report(errors, "validation_report.txt")
+
