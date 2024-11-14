@@ -1,0 +1,173 @@
+
+# Streamlit App for Text Analysis with Enhanced Output Information
+
+import streamlit as st
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import re
+from sklearn.feature_extraction.text import CountVectorizer
+from rake_nltk import Rake
+from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from collections import Counter
+from statistics import mean, stdev
+import numpy as np
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+import base64
+import time
+from bertopic import BERTopic
+from transformers import pipeline
+
+# Load NLTK stopwords
+try:
+    nltk.download('punkt')
+    nltk.download('stopwords')
+except Exception as e:
+    st.error(f"Error loading NLTK data: {e}")
+
+# Load Hugging Face NER model with error handling
+try:
+    ner_model = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english")
+except Exception as e:
+    st.error(f"Error loading Hugging Face NER model: {e}")
+
+# Enhanced sanitization function to remove non-printable and non-ASCII characters
+def sanitize_for_excel(text):
+    if isinstance(text, str):
+        # Remove non-ASCII and non-printable characters
+        text = re.sub(r'[\:*?<>|]', '', text)  # Remove invalid characters for Excel
+        text = ''.join(char for char in text if char.isprintable() and ord(char) < 128)  # Keep only ASCII printable characters
+    return text
+
+# Streamlit App Interface
+st.title("Text Analysis & Enhanced Output App")
+
+try:
+    # File upload
+    uploaded_file = st.file_uploader("Upload your file (CSV or Excel)", type=["csv", "xlsx"])
+    if uploaded_file is not None:
+        # Load the file based on its type
+        if uploaded_file.name.endswith(".csv"):
+            data = pd.read_csv(uploaded_file)
+        elif uploaded_file.name.endswith(".xlsx"):
+            data = pd.read_excel(uploaded_file)
+
+        st.write("Data preview:", data.head())
+
+        # Preprocessing function
+        def clean_text(text):
+            text = text.lower()
+            text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+            tokens = word_tokenize(text)
+            tokens = [word for word in tokens if word not in stopwords.words('english')]
+            return ' '.join(tokens)
+
+        # Analysis options
+        st.sidebar.title("Analysis Options")
+        analysis_method = st.sidebar.selectbox("Choose analysis method:", ["RAKE", "KeyBERT", "N-Gram Analysis", "Topic Detection", "Named Entity Recognition (NER)"])
+
+        # N-Gram Range Selection for RAKE and KeyBERT
+        if analysis_method in ["RAKE", "KeyBERT", "N-Gram Analysis"]:
+            min_n_value = st.sidebar.slider("Minimum N for N-Gram:", min_value=1, max_value=6, value=1)
+            max_n_value = st.sidebar.slider("Maximum N for N-Gram:", min_value=1, max_value=6, value=2)
+
+        # Process and analyze data on button click
+        if st.button("Run Analysis"):
+            # Initialize progress bar
+            progress = st.progress(0)
+            status_text = st.empty()
+
+            # Step 1: Preprocess text data
+            status_text.text("Step 1: Preprocessing data...")
+            data['Cleaned_Text'] = data['LL_TEXT'].astype(str).apply(clean_text)
+            cleaned_texts = data['Cleaned_Text'].tolist()
+            progress.progress(20)
+            time.sleep(0.5)
+
+            # Add columns for enhanced output
+            data['Pattern'] = ''  # To store identified patterns
+            data['Frequency'] = 0  # Frequency of patterns
+            data['Entities'] = ''  # Named entities if using NER
+            data['Category'] = ''  # Category grouping
+            data['Automation Recommendation'] = ''  # Suggested automation
+
+            # Step 2: Run chosen analysis method and populate additional columns
+            if analysis_method == "N-Gram Analysis":
+                status_text.text("Step 2: Performing N-Gram Analysis...")
+                vectorizer = CountVectorizer(ngram_range=(min_n_value, max_n_value))
+                ngrams = vectorizer.fit_transform(cleaned_texts)
+                ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+                sorted_ngrams = sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)
+
+                # Populate pattern and frequency columns
+                top_patterns = sorted_ngrams[:10]  # Top 10 patterns
+                data['Pattern'] = [pattern for pattern, _ in top_patterns]
+                data['Frequency'] = [freq for _, freq in top_patterns]
+
+                # Automation recommendation based on frequency
+                data['Automation Recommendation'] = data['Frequency'].apply(lambda x: "Consider automating" if x > 5 else "Review manually")
+
+                progress.progress(40)
+                time.sleep(0.5)
+
+            elif analysis_method == "RAKE":
+                status_text.text("Step 2: Performing RAKE Keyword Extraction...")
+                rake = Rake()
+                rake.extract_keywords_from_sentences(cleaned_texts)
+                phrases = rake.get_ranked_phrases_with_scores()
+                filtered_phrases = [(phrase, score) for score, phrase in phrases if min_n_value <= len(phrase.split()) <= max_n_value]
+
+                # Populate pattern and frequency columns
+                pattern_counter = Counter([phrase for phrase, score in filtered_phrases])
+                data['Pattern'] = list(pattern_counter.keys())
+                data['Frequency'] = list(pattern_counter.values())
+                data['Automation Recommendation'] = data['Frequency'].apply(lambda x: "Consider automating" if x > 5 else "Review manually")
+
+                progress.progress(60)
+                time.sleep(0.5)
+
+            elif analysis_method == "KeyBERT":
+                status_text.text("Step 2: Performing KeyBERT Keyword Extraction...")
+                kw_model = KeyBERT('all-MiniLM-L6-v2')
+                keyphrases = [kw_model.extract_keywords(text, keyphrase_ngram_range=(min_n_value, max_n_value), stop_words='english', top_n=10) for text in cleaned_texts]
+                flat_phrases = [phrase[0] for text_phrases in keyphrases for phrase in text_phrases]
+
+                # Populate pattern and frequency columns
+                phrase_counter = Counter(flat_phrases)
+                data['Pattern'] = list(phrase_counter.keys())
+                data['Frequency'] = list(phrase_counter.values())
+                data['Automation Recommendation'] = data['Frequency'].apply(lambda x: "Consider automating" if x > 5 else "Review manually")
+
+                progress.progress(60)
+                time.sleep(0.5)
+
+            elif analysis_method == "Named Entity Recognition (NER)":
+                status_text.text("Step 2: Performing Named Entity Recognition (NER)...")
+                data['Entities'] = data['LL_TEXT'].apply(lambda x: [(ent['word'], ent['entity']) for ent in ner_model(x)])
+
+                progress.progress(70)
+                time.sleep(0.5)
+
+            # Step 6: Save and Provide Download Link with Enhanced Information
+            status_text.text("Step 6: Saving processed data with enhanced info and preparing download link...")
+            sanitized_data = data.applymap(sanitize_for_excel)
+            output_file = 'enhanced_text_analysis_output.xlsx'
+            sanitized_data.to_excel(output_file, index=False)
+            progress.progress(100)
+
+            # Download link for output
+            def get_download_link(file_path):
+                with open(file_path, "rb") as f:
+                    b64 = base64.b64encode(f.read()).decode()
+                href = f'<a href="data:application/octet-stream;base64,{b64}" download="enhanced_text_analysis_output.xlsx">Download Enhanced Output File</a>'
+                return href
+
+            st.markdown(get_download_link(output_file), unsafe_allow_html=True)
+            status_text.text("Analysis with enhanced output completed successfully!")
+
+except Exception as e:
+    st.error(f"An error occurred: {e}")
