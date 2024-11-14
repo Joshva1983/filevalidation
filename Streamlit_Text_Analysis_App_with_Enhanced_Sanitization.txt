@@ -1,0 +1,40 @@
+
+# Streamlit App for Text Analysis, Topic Detection, and NER with enhanced character sanitization
+
+import streamlit as st
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import re
+from sklearn.feature_extraction.text import CountVectorizer
+from rake_nltk import Rake
+from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from collections import Counter
+from statistics import mean, stdev
+import numpy as np
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+import base64
+import time
+from bertopic import BERTopic
+from transformers import pipeline
+
+# Load NLTK stopwords
+nltk.download('punkt')
+nltk.download('stopwords')
+
+# Load Hugging Face NER model
+ner_model = pipeline("ner", model="dbmdz/bert-large-cased-finetuned-conll03-english")
+
+# Enhanced sanitization function to remove non-printable and non-ASCII characters
+def sanitize_for_excel(text):
+    if isinstance(text, str):
+        # Remove non-ASCII and non-printable characters
+        text = re.sub(r'[\:*?<>|]', '', text)  # Remove invalid characters for Excel
+        text = ''.join(char for char in text if char.isprintable() and ord(char) < 128)  # Keep only ASCII printable characters
+    return text
+
+# Rest of the Streamlit code continues...
