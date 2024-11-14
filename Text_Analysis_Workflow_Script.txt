@@ -1,0 +1,118 @@
+
+# Workflow Script for Analyzing Text Data and Identifying Automation Opportunities
+
+### Step 1: Data Preprocessing
+
+```python
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import re
+
+# Load the Excel file
+data = pd.read_excel('text_data.xlsx')
+texts = data['LL_TEXT'].astype(str).tolist()
+
+# Text cleaning and normalization
+def clean_text(text):
+    text = text.lower()  # Convert to lowercase
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  # Remove punctuation
+    tokens = word_tokenize(text)
+    tokens = [word for word in tokens if word not in stopwords.words('english')]
+    return ' '.join(tokens)
+
+# Apply cleaning to all texts
+cleaned_texts = [clean_text(text) for text in texts]
+```
+
+### Step 2: N-Gram & Phrase Analysis
+
+```python
+from sklearn.feature_extraction.text import CountVectorizer
+
+# Generate n-grams and calculate frequency
+def get_ngrams(corpus, n=2):
+    vectorizer = CountVectorizer(ngram_range=(n, n))
+    ngrams = vectorizer.fit_transform(corpus)
+    ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+    return sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)
+
+# Get bigrams and trigrams
+bigrams = get_ngrams(cleaned_texts, n=2)
+trigrams = get_ngrams(cleaned_texts, n=3)
+
+# Display the top 10 bigrams and trigrams
+print("Top 10 Bigrams:", bigrams[:10])
+print("Top 10 Trigrams:", trigrams[:10])
+```
+
+### Step 3: Clustering & Pattern Identification
+
+```python
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+import numpy as np
+
+# Generate embeddings for each text using Sentence-BERT
+model = SentenceTransformer('all-MiniLM-L6-v2')
+embeddings = model.encode(cleaned_texts)
+
+# Apply KMeans clustering
+num_clusters = 5  # Adjust based on your data
+kmeans = KMeans(n_clusters=num_clusters, random_state=0)
+labels = kmeans.fit_predict(embeddings)
+
+# Add the cluster labels to the data
+data['Cluster'] = labels
+```
+
+### Step 4: Pattern Analysis & Frequency Check
+
+```python
+from collections import Counter
+
+# Identify high-frequency patterns within each cluster
+for cluster in range(num_clusters):
+    cluster_texts = data[data['Cluster'] == cluster]['LL_TEXT']
+    cluster_cleaned_texts = [clean_text(text) for text in cluster_texts]
+    all_text = ' '.join(cluster_cleaned_texts)
+    word_freq = Counter(word_tokenize(all_text))
+    print(f"Top words in Cluster {cluster}:", word_freq.most_common(10))
+```
+
+### Step 5: Automation Opportunity Evaluation
+
+```python
+# Identify high-frequency phrases as automation candidates
+automation_candidates = []
+
+for bigram, freq in bigrams[:20]:  # Top 20 bigrams as examples
+    if freq > threshold:  # Define a frequency threshold based on your data
+        automation_candidates.append((bigram, freq))
+
+# Print the potential automation candidates
+print("Potential Automation Candidates:", automation_candidates)
+```
+
+### Step 6: Insights & Reporting
+
+```python
+import matplotlib.pyplot as plt
+from wordcloud import WordCloud
+
+# Generate a word cloud for the most common words
+all_cleaned_texts = ' '.join(cleaned_texts)
+wordcloud = WordCloud(width=800, height=400, background_color='white').generate(all_cleaned_texts)
+
+# Display the word cloud
+plt.figure(figsize=(10, 5))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')
+plt.show()
+
+# Save the data with clusters and insights as a new Excel file
+data.to_excel('processed_text_data_with_clusters.xlsx', index=False)
+```
+
+# End of Workflow Script
