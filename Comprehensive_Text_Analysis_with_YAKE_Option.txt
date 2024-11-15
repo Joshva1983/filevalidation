@@ -1,0 +1,130 @@
+
+# Streamlit App for Comprehensive Analysis with Phrase Cloud and YAKE Option
+
+import streamlit as st
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+import re
+from sklearn.feature_extraction.text import CountVectorizer
+from rake_nltk import Rake
+from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from wordcloud import WordCloud
+import base64
+import matplotlib.pyplot as plt
+from yake import KeywordExtractor
+
+# Load NLTK stopwords
+try:
+    nltk.download('punkt')
+    nltk.download('stopwords')
+except Exception as e:
+    st.error(f"Error loading NLTK data: {e}")
+
+# Streamlit App Interface
+st.title("Comprehensive Text Analysis with Phrase Cloud and YAKE Option")
+
+# File upload
+uploaded_file = st.file_uploader("Upload your file (CSV or Excel)", type=["csv", "xlsx"])
+if uploaded_file is not None:
+    # Load data
+    data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+    st.write("Data preview:", data.head())
+
+    # Data Preprocessing
+    def clean_text(text):
+        text = text.lower()
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+        tokens = word_tokenize(text)
+        tokens = [word for word in tokens if word not in stopwords.words('english')]
+        return ' '.join(tokens)
+
+    data['Cleaned_Text'] = data['LL_TEXT'].astype(str).apply(clean_text)
+    cleaned_texts = data['Cleaned_Text'].tolist()
+
+    # Sidebar options for N-Gram Analysis and Keyphrase Extraction Method
+    st.sidebar.header("Options for Analysis")
+    min_n_value = st.sidebar.slider("Minimum N for N-Gram:", min_value=1, max_value=6, value=1)
+    max_n_value = st.sidebar.slider("Maximum N for N-Gram:", min_value=1, max_value=6, value=2)
+    keyphrase_method = st.sidebar.selectbox("Choose Keyphrase Extraction Method", ["RAKE", "KeyBERT", "YAKE"])
+
+    # N-Gram and Frequency Analysis
+    vectorizer = CountVectorizer(ngram_range=(min_n_value, max_n_value))
+    ngrams = vectorizer.fit_transform(cleaned_texts)
+    ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+    sorted_ngrams = sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)[:100]
+
+    # Keyphrase Extraction based on selected method
+    if keyphrase_method == "RAKE":
+        rake = Rake()
+        key_phrases = set()
+        for text in cleaned_texts:
+            rake.extract_keywords_from_text(text)
+            key_phrases.update(rake.get_ranked_phrases())
+
+    elif keyphrase_method == "KeyBERT":
+        kw_model = KeyBERT('all-MiniLM-L6-v2')
+        key_phrases = set()
+        for text in cleaned_texts:
+            keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(min_n_value, max_n_value), top_n=5)
+            key_phrases.update([kw[0] for kw in keywords])
+
+    elif keyphrase_method == "YAKE":
+        yake_extractor = KeywordExtractor(lan="en", n=max_n_value, dedupLim=0.9, top=5)
+        key_phrases = set()
+        for text in cleaned_texts:
+            keywords = yake_extractor.extract_keywords(text)
+            key_phrases.update([kw[0] for kw in keywords])
+
+    # Clustering with Sentence-BERT embeddings and KMeans
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    embeddings = embedder.encode(cleaned_texts)
+    num_clusters = st.sidebar.slider("Number of Clusters:", min_value=2, max_value=10, value=5)
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(embeddings)
+    data['Cluster'] = clusters
+
+    # Comparison and Categorization
+    categorized_results = []
+    for phrase, freq in sorted_ngrams:
+        category = "High Frequency Only"
+        if phrase in key_phrases:
+            category = "High Frequency + Keyphrase Match"
+        for cluster in range(num_clusters):
+            cluster_phrases = data[data['Cluster'] == cluster]['Cleaned_Text']
+            if any(phrase in text for text in cluster_phrases):
+                if "Keyphrase Match" in category:
+                    category += " + Cluster Association"
+                else:
+                    category = "High Frequency + Cluster Association"
+        categorized_results.append((phrase, freq, category))
+
+    # Convert results to DataFrame
+    categorized_df = pd.DataFrame(categorized_results, columns=["Phrase", "Frequency", "Category"])
+    categorized_df = categorized_df.head(100)  # Top 100 results
+
+    # Display and save categorized results
+    st.write("Top 100 Categorized Results:", categorized_df)
+
+    # Generate Phrase Cloud for Top Phrases
+    st.subheader("Phrase Cloud for Top Phrases")
+    phrase_cloud_text = ' '.join([phrase for phrase, _, _ in categorized_results])
+    phrase_cloud = WordCloud(width=800, height=400, background_color='white').generate(phrase_cloud_text)
+    
+    # Display Phrase Cloud
+    plt.figure(figsize=(10, 5))
+    plt.imshow(phrase_cloud, interpolation="bilinear")
+    plt.axis("off")
+    st.pyplot(plt)
+
+    # Download link for output
+    def get_download_link(df, filename):
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV file</a>'
+        return href
+
+    st.markdown(get_download_link(categorized_df, "categorized_results.csv"), unsafe_allow_html=True)
