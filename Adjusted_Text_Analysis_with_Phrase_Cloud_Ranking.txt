@@ -1,0 +1,174 @@
+
+# Streamlit App for Text Analysis with Phrase Cloud Reflecting Exact Ranking
+
+import streamlit as st
+import pandas as pd
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+import re
+from sklearn.feature_extraction.text import CountVectorizer
+from rake_nltk import Rake
+from keybert import KeyBERT
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from wordcloud import WordCloud
+import base64
+import matplotlib.pyplot as plt
+from yake import KeywordExtractor
+from fuzzywuzzy import fuzz
+import time
+
+# Load NLTK stopwords and WordNet for lemmatization
+try:
+    nltk.download('punkt')
+    nltk.download('stopwords')
+    nltk.download('wordnet')
+except Exception as e:
+    st.error(f"Error loading NLTK data: {e}")
+
+lemmatizer = WordNetLemmatizer()
+
+# Streamlit App Interface
+st.title("Comprehensive Text Analysis with Accurate Phrase Cloud Ranking")
+
+# Sidebar options displayed before file upload
+st.sidebar.header("Options for Analysis")
+min_n_value = st.sidebar.slider("Minimum N for N-Gram:", min_value=1, max_value=6, value=1)
+max_n_value = st.sidebar.slider("Maximum N for N-Gram:", min_value=1, max_value=6, value=2)
+keyphrase_method = st.sidebar.selectbox("Choose Keyphrase Extraction Method", ["RAKE", "KeyBERT", "YAKE"])
+num_clusters = st.sidebar.slider("Number of Clusters:", min_value=2, max_value=10, value=5)
+
+# File upload
+uploaded_file = st.file_uploader("Upload your file (CSV or Excel)", type=["csv", "xlsx"])
+
+# Overall progress bar
+overall_progress = st.progress(0)
+status_text = st.empty()
+
+if uploaded_file is not None:
+    # Load data
+    data = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+    st.write("Data preview:", data.head())
+    total_records = len(data)
+
+    # Step 1: Data Preprocessing with record-based progress
+    status_text.text("Step 1: Preprocessing data...")
+    stage_progress = st.progress(0)
+    def clean_and_lemmatize_text(text):
+        text = text.lower()
+        text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+        tokens = word_tokenize(text)
+        tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stopwords.words('english')]
+        return ' '.join(tokens)
+
+    data['Cleaned_Text'] = [clean_and_lemmatize_text(text) for text in data['LL_TEXT'].astype(str)]
+    for i, _ in enumerate(data['Cleaned_Text'], start=1):
+        stage_progress.progress(i / total_records)
+    overall_progress.progress(20)
+
+    # Step 2: N-Gram and Frequency Analysis with record-based progress
+    status_text.text("Step 2: Performing N-Gram and Frequency Analysis...")
+    stage_progress.progress(0)
+    vectorizer = CountVectorizer(ngram_range=(min_n_value, max_n_value))
+    ngrams = vectorizer.fit_transform(data['Cleaned_Text'])
+    ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+    sorted_ngrams = sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)[:100]
+    for i, _ in enumerate(sorted_ngrams, start=1):
+        stage_progress.progress(i / len(sorted_ngrams))
+    overall_progress.progress(40)
+
+    # Step 3: Keyphrase Extraction with record-based progress
+    status_text.text(f"Step 3: Performing Keyphrase Extraction with {keyphrase_method}...")
+    stage_progress.progress(0)
+    key_phrases = set()
+    if keyphrase_method == "RAKE":
+        rake = Rake()
+        for i, text in enumerate(data['Cleaned_Text'], start=1):
+            rake.extract_keywords_from_text(text)
+            key_phrases.update(rake.get_ranked_phrases())
+            stage_progress.progress(i / total_records)
+    elif keyphrase_method == "KeyBERT":
+        kw_model = KeyBERT('all-MiniLM-L6-v2')
+        for i, text in enumerate(data['Cleaned_Text'], start=1):
+            keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=(min_n_value, max_n_value), top_n=5)
+            key_phrases.update([kw[0] for kw in keywords])
+            stage_progress.progress(i / total_records)
+    elif keyphrase_method == "YAKE":
+        yake_extractor = KeywordExtractor(lan="en", n=max_n_value, dedupLim=0.9, top=5)
+        for i, text in enumerate(data['Cleaned_Text'], start=1):
+            keywords = yake_extractor.extract_keywords(text)
+            key_phrases.update([kw[0] for kw in keywords])
+            stage_progress.progress(i / total_records)
+    overall_progress.progress(60)
+
+    # Step 4: Clustering with record-based progress
+    status_text.text("Step 4: Performing Clustering...")
+    stage_progress.progress(0)
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    embeddings = embedder.encode(data['Cleaned_Text'])
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(embeddings)
+    data['Cluster'] = clusters
+    for i, _ in enumerate(clusters, start=1):
+        stage_progress.progress(i / len(clusters))
+    overall_progress.progress(80)
+
+    # Step 5: Comparison and Enhanced Deduplication with Adjusted Fuzzy Matching
+    status_text.text("Step 5: Enhanced Deduplication with Fuzzy Matching...")
+    categorized_results = []
+    for phrase, freq in sorted_ngrams:
+        category = "High Frequency Only"
+        if phrase in key_phrases:
+            category = "High Frequency + Keyphrase Match"
+        for cluster in range(num_clusters):
+            cluster_phrases = data[data['Cluster'] == cluster]['Cleaned_Text']
+            if any(phrase in text for text in cluster_phrases):
+                if "Keyphrase Match" in category:
+                    category += " + Cluster Association"
+                else:
+                    category = "High Frequency + Cluster Association"
+        categorized_results.append((phrase, freq, category))
+
+    # Deduplication with Fuzzy Matching and lower threshold for higher similarity grouping
+    deduplicated_phrases = []
+    for i, (phrase, freq, category) in enumerate(categorized_results):
+        duplicate_found = False
+        for j, (existing_phrase, existing_freq, existing_category) in enumerate(deduplicated_phrases):
+            if fuzz.ratio(phrase, existing_phrase) > 80:  # Lowered Fuzzy matching threshold
+                deduplicated_phrases[j] = (existing_phrase, existing_freq + freq, existing_category)
+                duplicate_found = True
+                break
+        if not duplicate_found:
+            deduplicated_phrases.append((phrase, freq, category))
+
+    deduplicated_df = pd.DataFrame(deduplicated_phrases, columns=["Phrase", "Frequency", "Category"])
+    deduplicated_df = deduplicated_df.head(100)
+
+    overall_progress.progress(90)
+
+    # Display and save deduplicated categorized results
+    st.write("Top 100 Deduplicated Categorized Results:", deduplicated_df)
+
+    # Step 6: Generate Phrase Cloud based on deduplicated output order and frequency
+    status_text.text("Step 6: Generating Phrase Cloud...")
+    phrase_cloud_text = {phrase: freq for phrase, freq, _ in deduplicated_phrases}  # Using frequency for size in cloud
+    phrase_cloud = WordCloud(width=800, height=400, background_color='white', collocations=False).generate_from_frequencies(phrase_cloud_text)
+
+    # Display Phrase Cloud
+    plt.figure(figsize=(10, 5))
+    plt.imshow(phrase_cloud, interpolation="bilinear")
+    plt.axis("off")
+    st.pyplot(plt)
+    overall_progress.progress(100)
+
+    # Download link for output
+    def get_download_link(df, filename):
+        csv = df.to_csv(index=False)
+        b64 = base64.b64encode(csv.encode()).decode()
+        href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Download CSV file</a>'
+        return href
+
+    st.markdown(get_download_link(deduplicated_df, "enhanced_deduplicated_results.csv"), unsafe_allow_html=True)
+    status_text.text("Analysis completed successfully!")
