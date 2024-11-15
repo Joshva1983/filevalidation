@@ -1,0 +1,145 @@
+
+import streamlit as st
+import pandas as pd
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from collections import Counter
+from sklearn.feature_extraction.text import CountVectorizer
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from keybert import KeyBERT
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import re
+from yake import KeywordExtractor
+from rake_nltk import Rake
+import nltk
+import xlsxwriter
+
+# Ensure NLTK resources are available
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+lemmatizer = WordNetLemmatizer()
+
+# Text Preprocessing Function
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+    tokens = word_tokenize(text)
+    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stopwords.words('english')]
+    return ' '.join(tokens)
+
+# Frequency Analysis Function
+def frequency_analysis(data, ngram_range=(1, 2)):
+    vectorizer = CountVectorizer(ngram_range=ngram_range)
+    ngrams = vectorizer.fit_transform(data)
+    ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+    return sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)[:100]
+
+# Keyword Extraction Functions
+def extract_keywords_yake(data, max_keywords=100):
+    extractor = KeywordExtractor(n=2, dedupLim=0.9, top=max_keywords)
+    keywords = []
+    for text in data:
+        keywords.extend([kw[0] for kw in extractor.extract_keywords(text)])
+    return Counter(keywords).most_common(max_keywords)
+
+def extract_keywords_rake(data, max_keywords=100):
+    rake = Rake()
+    keywords = []
+    for text in data:
+        rake.extract_keywords_from_text(text)
+        keywords.extend(rake.get_ranked_phrases())
+    return Counter(keywords).most_common(max_keywords)
+
+def extract_keywords_keybert(data, ngram_range=(1, 2), top_n=100):
+    kw_model = KeyBERT('all-MiniLM-L6-v2')
+    key_phrases = []
+    for text in data:
+        keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=ngram_range, top_n=5)
+        key_phrases.extend([kw[0] for kw in keywords])
+    return Counter(key_phrases).most_common(top_n)
+
+# Clustering Function
+def clustering_analysis(data, num_clusters=5):
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    embeddings = embedder.encode(data)
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(embeddings)
+    cluster_results = pd.DataFrame({'Phrase': data, 'Cluster': clusters})
+    return cluster_results.groupby('Cluster').head(100)
+
+# Streamlit App
+st.title("Advanced Text Analysis with Progress Tracking")
+
+# File Upload
+uploaded_file = st.file_uploader("Upload your file (CSV or Excel)", type=["csv", "xlsx"])
+
+if uploaded_file is not None:
+    if uploaded_file.name.endswith('.csv'):
+        data = pd.read_csv(uploaded_file)
+    elif uploaded_file.name.endswith('.xlsx'):
+        data = pd.read_excel(uploaded_file)
+    data['Processed_Text'] = data['LL_TEXT'].apply(preprocess_text)
+    processed_data = data['Processed_Text'].tolist()
+
+    st.write("Data preview:", data.head())
+
+    # User Options
+    st.sidebar.title("Analysis Configuration")
+    ngram_range = st.sidebar.selectbox("Select N-Gram Range", options=[(1, 1), (1, 2), (2, 3)], index=1)
+    keyword_method = st.sidebar.radio("Keyword Extraction Method", options=["YAKE", "RAKE", "KeyBERT"], index=2)
+    num_clusters = st.sidebar.slider("Number of Clusters", min_value=2, max_value=10, value=5)
+
+    # Button to start analysis
+    if st.button("Start Analysis"):
+        # Overall progress bar
+        overall_progress = st.progress(0)
+        status_text = st.empty()
+
+        with st.spinner("Running analysis..."):
+            # Step 1: Frequency Analysis
+            status_text.text("Step 1: Performing Frequency Analysis...")
+            freq_results = frequency_analysis(processed_data, ngram_range=ngram_range)
+            overall_progress.progress(25)
+
+            # Step 2: Keyword Extraction
+            status_text.text(f"Step 2: Performing Keyword Extraction ({keyword_method})...")
+            if keyword_method == "YAKE":
+                keyword_results = extract_keywords_yake(processed_data)
+            elif keyword_method == "RAKE":
+                keyword_results = extract_keywords_rake(processed_data)
+            else:  # KeyBERT
+                keyword_results = extract_keywords_keybert(processed_data, ngram_range=ngram_range)
+            overall_progress.progress(50)
+
+            # Step 3: Clustering
+            status_text.text("Step 3: Performing Clustering Analysis...")
+            cluster_results = clustering_analysis(processed_data, num_clusters=num_clusters)
+            overall_progress.progress(75)
+
+            # Step 4: Generate Phrase Clouds
+            status_text.text("Step 4: Generating Phrase Clouds...")
+            wordcloud_freq = WordCloud(width=800, height=400, background_color='white').generate_from_frequencies(dict(freq_results))
+            wordcloud_keywords = WordCloud(width=800, height=400, background_color='white').generate_from_frequencies(dict(keyword_results))
+
+            st.image(wordcloud_freq.to_array(), caption="Frequency Analysis Cloud")
+            st.image(wordcloud_keywords.to_array(), caption="Keyword Extraction Cloud")
+            overall_progress.progress(90)
+
+            # Step 5: Save and Output Results
+            status_text.text("Step 5: Saving Results...")
+            output_file = "/mnt/data/analysis_with_progress_bars.xlsx"
+            with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+                pd.DataFrame(freq_results, columns=["Phrase", "Frequency"]).to_excel(writer, sheet_name='Frequency Analysis', index=False)
+                pd.DataFrame(keyword_results, columns=["Phrase", "Score"]).to_excel(writer, sheet_name='Keyword Extraction', index=False)
+                cluster_results.to_excel(writer, sheet_name='Clustering Analysis', index=False)
+
+            st.success("Analysis completed!")
+            st.write("Download the results:")
+            st.download_button(label="Download Excel File", data=open(output_file, "rb").read(),
+                               file_name="analysis_with_progress_bars.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            overall_progress.progress(100)
