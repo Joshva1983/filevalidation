@@ -1,0 +1,135 @@
+
+import streamlit as st
+import pandas as pd
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+from collections import Counter
+from sklearn.feature_extraction.text import CountVectorizer
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+from keybert import KeyBERT
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+import re
+from fuzzywuzzy import fuzz
+import nltk
+import xlsxwriter
+
+# Ensure NLTK resources are available
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+
+lemmatizer = WordNetLemmatizer()
+
+# Text Preprocessing Function
+def preprocess_text(text):
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)
+    tokens = word_tokenize(text)
+    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stopwords.words('english')]
+    return ' '.join(tokens)
+
+# Deduplication Function using Fuzzy Matching
+def deduplicate_phrases(data, threshold=80):
+    deduplicated = {}
+    for phrase in data:
+        match = None
+        for key in deduplicated:
+            if fuzz.ratio(phrase, key) > threshold:
+                match = key
+                break
+        if match:
+            deduplicated[match] += 1
+        else:
+            deduplicated[phrase] = 1
+    return list(deduplicated.items())
+
+# Frequency Analysis Function
+def frequency_analysis(data, ngram_range=(1, 2)):
+    vectorizer = CountVectorizer(ngram_range=ngram_range)
+    ngrams = vectorizer.fit_transform(data)
+    ngram_freq = dict(zip(vectorizer.get_feature_names_out(), ngrams.sum(axis=0).tolist()[0]))
+    return sorted(ngram_freq.items(), key=lambda x: x[1], reverse=True)[:100]
+
+# Keyphrase Extraction Function
+def keyphrase_extraction(data, ngram_range=(1, 2)):
+    kw_model = KeyBERT('all-MiniLM-L6-v2')
+    key_phrases = []
+    for text in data:
+        keywords = kw_model.extract_keywords(text, keyphrase_ngram_range=ngram_range, top_n=5)
+        key_phrases.extend([kw[0] for kw in keywords])
+    return Counter(key_phrases).most_common(100)
+
+# Clustering Function
+def clustering_analysis(data, num_clusters=5):
+    embedder = SentenceTransformer('all-MiniLM-L6-v2')
+    embeddings = embedder.encode(data)
+    kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+    clusters = kmeans.fit_predict(embeddings)
+    cluster_results = pd.DataFrame({'Phrase': data, 'Cluster': clusters})
+    return cluster_results.groupby('Cluster').head(100)
+
+# Matches All Three Function
+def matches_all_three(freq_results, keyphrase_results, cluster_results):
+    freq_df = pd.DataFrame(freq_results, columns=["Phrase", "Frequency"])
+    keyphrase_df = pd.DataFrame(keyphrase_results, columns=["Phrase", "Score"])
+    combined_df = pd.merge(freq_df, keyphrase_df, on="Phrase", how="inner")
+    combined_df = pd.merge(combined_df, cluster_results, on="Phrase", how="inner").head(100)
+    return combined_df
+
+# Phrase Cloud Generation
+def generate_phrase_cloud(data, title):
+    wordcloud = WordCloud(width=800, height=400, background_color='white', collocations=False).generate_from_frequencies(dict(data))
+    plt.figure(figsize=(10, 5))
+    plt.imshow(wordcloud, interpolation="bilinear")
+    plt.axis("off")
+    plt.title(title)
+    st.pyplot(plt)
+
+# Streamlit App
+st.title("Advanced Text Analysis with Preprocessing and Deduplication")
+
+# File Upload
+uploaded_file = st.file_uploader("Upload your file (CSV or Excel)", type=["csv", "xlsx"])
+if uploaded_file is not None:
+    if uploaded_file.name.endswith('.csv'):
+        data = pd.read_csv(uploaded_file)
+    elif uploaded_file.name.endswith('.xlsx'):
+        data = pd.read_excel(uploaded_file)
+    data['Processed_Text'] = data['LL_TEXT'].apply(preprocess_text)
+    processed_data = data['Processed_Text'].tolist()
+
+    st.write("Data preview:", data.head())
+
+    # Button to start analysis
+    if st.button("Run Analysis"):
+        with st.spinner("Running analysis..."):
+            # Deduplication and analyses
+            deduplicated_data = [phrase for phrase, count in deduplicate_phrases(processed_data)]
+            freq_results = frequency_analysis(deduplicated_data)
+            keyphrase_results = keyphrase_extraction(deduplicated_data)
+            cluster_results = clustering_analysis(deduplicated_data)
+            combined_results = matches_all_three(freq_results, keyphrase_results, cluster_results)
+
+            # Generate Phrase Clouds
+            st.subheader("Phrase Clouds")
+            generate_phrase_cloud(freq_results, "Frequency Analysis")
+            generate_phrase_cloud(keyphrase_results, "Keyphrase Extraction")
+            cluster_counts = cluster_results['Phrase'].value_counts()
+            generate_phrase_cloud(cluster_counts.items(), "Clustering Analysis")
+            generate_phrase_cloud(combined_results[['Phrase', 'Frequency']].values, "Matches All Three")
+
+            # Generate output Excel file with four tabs
+            output_file = "/mnt/data/analysis_with_deduplication_and_preprocessing.xlsx"
+            with pd.ExcelWriter(output_file, engine='xlsxwriter') as writer:
+                pd.DataFrame(freq_results, columns=["Phrase", "Frequency"]).to_excel(writer, sheet_name='Frequency Analysis', index=False)
+                pd.DataFrame(keyphrase_results, columns=["Phrase", "Score"]).to_excel(writer, sheet_name='Keyphrase Extraction', index=False)
+                cluster_results.to_excel(writer, sheet_name='Clustering Analysis', index=False)
+                combined_results.to_excel(writer, sheet_name='Matches All Three', index=False)
+
+            st.success("Analysis completed!")
+            st.write("Download the results:")
+            st.download_button(label="Download Excel File", data=open(output_file, "rb").read(),
+                               file_name="analysis_with_deduplication_and_preprocessing.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
